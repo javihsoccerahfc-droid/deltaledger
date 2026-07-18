@@ -5,74 +5,82 @@ import { getOrCreateDefaultOrganization } from "./organizations";
 import type { RawTable } from "@/core/ingestion/types";
 import { ingestPurchaseOrderFile } from "@/appLayer/ingestPurchaseOrder";
 
+/**
+ * A PO import resolves/creates suppliers, then purchase orders, then purchase order lines --
+ * three dependent write phases that must succeed or fail together (see saveBomImport for the
+ * same rationale). Wrapped in db.transaction so a failure partway through never leaves, e.g.,
+ * newly created supplier/PO rows with no lines attached.
+ */
 export async function savePurchaseOrderImport(ecId: string, table: RawTable, sourceFileName: string) {
   const org = await getOrCreateDefaultOrganization();
   const ingested = ingestPurchaseOrderFile(table, sourceFileName, new Date().toISOString());
 
-  const supplierIdByName = new Map<string, string>();
-  for (const s of ingested.suppliers) {
-    const existing = await db
-      .select()
-      .from(suppliers)
-      .where(and(eq(suppliers.organizationId, org.id), eq(suppliers.name, s.name)))
-      .limit(1);
-    if (existing[0]) {
-      supplierIdByName.set(s.name, existing[0].id);
-    } else {
-      const [created] = await db
-        .insert(suppliers)
+  return db.transaction(async (tx) => {
+    const supplierIdByName = new Map<string, string>();
+    for (const s of ingested.suppliers) {
+      const existing = await tx
+        .select()
+        .from(suppliers)
+        .where(and(eq(suppliers.organizationId, org.id), eq(suppliers.name, s.name)))
+        .limit(1);
+      if (existing[0]) {
+        supplierIdByName.set(s.name, existing[0].id);
+      } else {
+        const [created] = await tx
+          .insert(suppliers)
+          .values({
+            organizationId: org.id,
+            name: s.name,
+            erpSupplierId: s.erpSupplierId,
+            defaultCancellationTermsNotes: s.defaultCancellationTermsNotes,
+          })
+          .returning();
+        supplierIdByName.set(s.name, created.id);
+      }
+    }
+
+    const poIdByNumber = new Map<string, string>();
+    for (const po of ingested.purchaseOrders) {
+      const originalSupplier = ingested.suppliers.find((s) => s.id === po.supplierId);
+      const resolvedSupplierId = supplierIdByName.get(originalSupplier?.name ?? "") ?? po.supplierId;
+      const [created] = await tx
+        .insert(purchaseOrders)
         .values({
           organizationId: org.id,
-          name: s.name,
-          erpSupplierId: s.erpSupplierId,
-          defaultCancellationTermsNotes: s.defaultCancellationTermsNotes,
+          engineeringChangeId: ecId,
+          poNumber: po.poNumber,
+          supplierId: resolvedSupplierId,
+          sourceFile: po.sourceFile,
+          importedAt: po.importedAt,
         })
         .returning();
-      supplierIdByName.set(s.name, created.id);
+      poIdByNumber.set(po.poNumber, created.id);
     }
-  }
 
-  const poIdByNumber = new Map<string, string>();
-  for (const po of ingested.purchaseOrders) {
-    const originalSupplier = ingested.suppliers.find((s) => s.id === po.supplierId);
-    const resolvedSupplierId = supplierIdByName.get(originalSupplier?.name ?? "") ?? po.supplierId;
-    const [created] = await db
-      .insert(purchaseOrders)
-      .values({
-        organizationId: org.id,
-        engineeringChangeId: ecId,
-        poNumber: po.poNumber,
-        supplierId: resolvedSupplierId,
-        sourceFile: po.sourceFile,
-        importedAt: po.importedAt,
-      })
-      .returning();
-    poIdByNumber.set(po.poNumber, created.id);
-  }
+    if (ingested.lines.length > 0) {
+      await tx.insert(purchaseOrderLines).values(
+        ingested.lines.map((l) => {
+          const originalPo = ingested.purchaseOrders.find((p) => p.id === l.purchaseOrderId);
+          const resolvedPoId = poIdByNumber.get(originalPo?.poNumber ?? "") ?? l.purchaseOrderId;
+          return {
+            id: l.id,
+            purchaseOrderId: resolvedPoId,
+            partId: l.partId,
+            rawPartNumber: l.rawPartNumber,
+            quantityOpen: l.quantityOpen,
+            quantityParseStatus: l.quantityParseStatus,
+            transactionCurrency: l.transactionCurrency,
+            unitPriceTransactionCurrency: l.unitPriceTransactionCurrency,
+            priceParseStatus: l.priceParseStatus,
+            promisedReceiptDate: l.promisedReceiptDate,
+            lineStatus: l.lineStatus,
+          };
+        })
+      );
+    }
 
-  if (ingested.lines.length > 0) {
-    await db.insert(purchaseOrderLines).values(
-      ingested.lines.map((l) => {
-        const originalPo = ingested.purchaseOrders.find((p) => p.id === l.purchaseOrderId);
-        const resolvedPoId = poIdByNumber.get(originalPo?.poNumber ?? "") ?? l.purchaseOrderId;
-        return {
-          id: l.id,
-          purchaseOrderId: resolvedPoId,
-          partId: l.partId,
-          rawPartNumber: l.rawPartNumber,
-          quantityOpen: l.quantityOpen,
-          quantityParseStatus: l.quantityParseStatus,
-          transactionCurrency: l.transactionCurrency,
-          unitPriceTransactionCurrency: l.unitPriceTransactionCurrency,
-          priceParseStatus: l.priceParseStatus,
-          promisedReceiptDate: l.promisedReceiptDate,
-          lineStatus: l.lineStatus,
-        };
-      })
-    );
-  }
-
-  return { supplierCount: supplierIdByName.size, poCount: poIdByNumber.size, lineCount: ingested.lines.length };
+    return { supplierCount: supplierIdByName.size, poCount: poIdByNumber.size, lineCount: ingested.lines.length };
+  });
 }
 
 export async function getPurchaseDataForEc(ecId: string) {

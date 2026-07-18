@@ -1,10 +1,18 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useReducer, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { importPurchaseOrderAction } from "@/app/actions";
 import { useDemoUser } from "@/lib/context/DemoUserContext";
-import { EmptyState, FailureState, SuccessState } from "@/components/shared/States";
+import { useTimedAction } from "@/lib/useTimedAction";
+import {
+  MAX_IMPORT_FILE_SIZE_BYTES,
+  MAX_IMPORT_FILE_SIZE_LABEL,
+  IMPORT_TIMEOUT_MS,
+  IMPORT_TIMEOUT_UNKNOWN_MESSAGE,
+} from "@/lib/importLimits";
+import { reduceImportSlotEvent, canStartImport, initialImportSlotState } from "@/lib/importSlotState";
+import { EmptyState, FailureState, SuccessState, WarningState } from "@/components/shared/States";
 import { SupplierTermsForm } from "./SupplierTermsForm";
 import { ExchangeRateForm } from "./ExchangeRateForm";
 
@@ -50,19 +58,75 @@ export function PoClient({
   const router = useRouter();
   const { currentUser } = useDemoUser();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [state, dispatch] = useReducer(reduceImportSlotEvent, initialImportSlotState);
   const [lastImportSummary, setLastImportSummary] = useState<string | null>(null);
+  const importTimer = useTimedAction();
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
-    setError(null);
-    setBusy(true);
-    const result = await importPurchaseOrderAction(ecId, file, currentUser);
-    setBusy(false);
-    if (!result.success) setError(result.message);
-    else {
-      setLastImportSummary(`${result.lineCount} line(s), ${result.supplierCount} supplier(s)`);
+
+    // See BomsClient.tsx: canStartImport is false both while busy and while locked in the
+    // "unknown" post-timeout state -- only a page refresh clears the latter.
+    if (!canStartImport(state)) return;
+    dispatch({ type: "start" });
+    setLastImportSummary(null);
+
+    if (file.size > MAX_IMPORT_FILE_SIZE_BYTES) {
+      dispatch({
+        type: "settled",
+        outcome: "failure",
+        message:
+          `"${file.name}" is too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). ` +
+          `Files must be ${MAX_IMPORT_FILE_SIZE_LABEL} or smaller.`,
+      });
+      return;
+    }
+
+    const first = await importTimer.run(
+      () => {
+        const formData = new FormData();
+        formData.set("ecId", ecId);
+        formData.set("file", file);
+        formData.set("actor", JSON.stringify(currentUser));
+        return importPurchaseOrderAction(formData);
+      },
+      {
+        timeoutMs: IMPORT_TIMEOUT_MS,
+        onTimeout: () => {
+          // See BomsClient.tsx for the full rationale: we can't cancel the underlying request,
+          // so the outcome is unknown, not success/failure. This locks the control -- only a
+          // page refresh, not an in-app retry, can clear it.
+          dispatch({ type: "timeout", message: IMPORT_TIMEOUT_UNKNOWN_MESSAGE });
+        },
+        onStaleSettle: (late) => {
+          // Must not clear the unknown-state warning, show an ordinary success message, or
+          // unlock the control -- see importSlotState.ts. A late success may still quietly
+          // refresh server data via router.refresh(), nothing more (deliberately NOT updating
+          // lastImportSummary here, since that renders as an ordinary success banner).
+          dispatch({ type: "staleSettled" });
+          if (late.status === "resolved" && late.value.success) {
+            router.refresh();
+          }
+        },
+      }
+    );
+
+    if (first.status === "timeout") return; // already handled above
+
+    if (first.status === "rejected") {
+      dispatch({
+        type: "settled",
+        outcome: "failure",
+        message: "The import request did not complete. Check your connection and try again.",
+      });
+      return;
+    }
+
+    if (!first.value.success) {
+      dispatch({ type: "settled", outcome: "failure", message: first.value.message });
+    } else {
+      dispatch({ type: "settled", outcome: "success" });
+      setLastImportSummary(`${first.value.lineCount} line(s), ${first.value.supplierCount} supplier(s)`);
       router.refresh();
     }
   }
@@ -74,8 +138,8 @@ export function PoClient({
     <div>
       <h1 className="text-xl font-semibold tracking-tight text-ink">Open PO Import</h1>
       <p className="mt-1 text-sm text-ink-soft">
-        Import the open-PO export (.xlsx, .xls, or .csv). Rows are grouped into purchase orders and
-        suppliers by PO number and supplier name.
+        Import the open-PO export (.xlsx, .xls, or .csv, up to {MAX_IMPORT_FILE_SIZE_LABEL}). Rows are
+        grouped into purchase orders and suppliers by PO number and supplier name.
       </p>
 
       <div className="mt-5 rounded-md border border-line bg-white p-4">
@@ -84,14 +148,21 @@ export function PoClient({
           type="file"
           accept=".xlsx,.xls,.csv"
           className="hidden"
+          disabled={!canStartImport(state)}
           onChange={(e) => handleFile(e.target.files?.[0])}
         />
         <button
           onClick={() => inputRef.current?.click()}
-          disabled={busy}
+          disabled={!canStartImport(state)}
           className="rounded-sm border border-line px-3 py-1.5 text-xs font-medium text-ink hover:border-accent hover:text-accent disabled:opacity-50"
         >
-          {busy ? "Importing…" : poLines.length > 0 ? "Re-import open PO export" : "Import open PO export"}
+          {state.status === "busy"
+            ? "Importing…"
+            : state.status === "unknown"
+              ? "Refresh page to retry"
+              : poLines.length > 0
+                ? "Re-import open PO export"
+                : "Import open PO export"}
         </button>
         {poLines.length > 0 && (
           <span className="ml-3 text-xs text-ink-soft">
@@ -100,9 +171,14 @@ export function PoClient({
         )}
       </div>
 
-      {error && (
+      {state.status === "error" && (
         <div className="mt-4">
-          <FailureState title="Could not import file" body={error} />
+          <FailureState title="Could not import file" body={state.message} />
+        </div>
+      )}
+      {state.status === "unknown" && (
+        <div className="mt-4">
+          <WarningState title="Import status unknown" body={state.message} />
         </div>
       )}
       {lastImportSummary && (

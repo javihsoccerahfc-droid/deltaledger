@@ -28,6 +28,35 @@ async function parseFileToTable(file: File): Promise<RawTable> {
   return workbook.getSheetTable(workbook.sheetNames[0]);
 }
 
+function requireStringField(formData: FormData, field: string): string {
+  const value = formData.get(field);
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`Missing required field "${field}" in upload.`);
+  }
+  return value;
+}
+
+function requireFileField(formData: FormData, field: string): File {
+  const value = formData.get(field);
+  if (!(value instanceof File) || value.size === 0) {
+    throw new Error("No file was received. Please choose a file and try again.");
+  }
+  return value;
+}
+
+function parseActorField(formData: FormData): User {
+  const raw = requireStringField(formData, "actor");
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.id !== "string" || typeof parsed.name !== "string" || typeof parsed.role !== "string") {
+      throw new Error("malformed actor payload");
+    }
+    return parsed as User;
+  } catch {
+    throw new Error("Could not identify the acting user for this import.");
+  }
+}
+
 export async function createEngineeringChangeAction(name: string, description: string, actor: User) {
   const ec = await ecRepo.createEngineeringChange(name, description, actor.id);
   await auditRepo.recordAuditEvent({
@@ -49,13 +78,24 @@ export async function getEngineeringChangeAction(id: string) {
   return ecRepo.getEngineeringChangeById(id);
 }
 
+/**
+ * Accepts a FormData payload (fields: "ecId", "versionLabel", "file", "actor" [JSON]) rather
+ * than individual positional arguments including a raw File. This is the canonical, most
+ * broadly cross-browser-tested pattern for file uploads through Next.js Server Actions -- the
+ * same encoding a real <form action={...}> submission produces. Passing a bare File as a
+ * positional argument to a Server Action instead relies on a less battle-tested RSC argument
+ * encoder and is the prime suspect behind imports hanging indefinitely with zero network
+ * request in Safari (see CHANGELOG.md).
+ */
 export async function importBomAction(
-  ecId: string,
-  versionLabel: "current" | "proposed",
-  file: File,
-  actor: User
+  formData: FormData
 ): Promise<{ success: true; lineCount: number } | { success: false; message: string }> {
   try {
+    const ecId = requireStringField(formData, "ecId");
+    const versionLabel = requireStringField(formData, "versionLabel") as "current" | "proposed";
+    const file = requireFileField(formData, "file");
+    const actor = parseActorField(formData);
+
     const table = await parseFileToTable(file);
     const bomImport = await bomRepo.saveBomImport(ecId, versionLabel, table, file.name, "Sheet1", actor.id);
     const imports = await bomRepo.getBomImportsForEc(ecId);
@@ -79,14 +119,20 @@ export async function getBomStateAction(ecId: string) {
   return { imports, diff };
 }
 
+/**
+ * Accepts a FormData payload (fields: "ecId", "file", "actor" [JSON]) -- see importBomAction
+ * for why this replaces individual positional arguments including a raw File.
+ */
 export async function importPurchaseOrderAction(
-  ecId: string,
-  file: File,
-  actor: User
+  formData: FormData
 ): Promise<
   { success: true; supplierCount: number; poCount: number; lineCount: number } | { success: false; message: string }
 > {
   try {
+    const ecId = requireStringField(formData, "ecId");
+    const file = requireFileField(formData, "file");
+    const actor = parseActorField(formData);
+
     const table = await parseFileToTable(file);
     const result = await poRepo.savePurchaseOrderImport(ecId, table, file.name);
     await auditRepo.recordAuditEvent({
