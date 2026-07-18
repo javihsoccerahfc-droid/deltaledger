@@ -10,28 +10,84 @@ thread at all, via CSV/XLSX export.
 ## Status
 
 A persistence-backed Next.js application: every page is a Server Component reading live data
-from a real SQLite database via Drizzle ORM; every mutation goes through a Server Action into a
-typed repository layer; nothing is held in browser memory or an in-memory context. 117 automated
-tests, all passing (17 files: pure domain logic + real database integration tests). Clean
-production build, all 12 routes verified.
+from a real **PostgreSQL** database via Drizzle ORM; every mutation goes through a Server Action
+into a typed repository layer; nothing is held in browser memory or an in-memory context. Runs
+identically in local development, Docker, and on Vercel — the app connects over the network via a
+single `DATABASE_URL`, never by opening a local file, so it works on serverless platforms with an
+ephemeral/read-only filesystem. 117 automated tests, all passing (17 files: pure domain logic +
+real database integration tests). Clean production build, all 12 routes verified.
+
+### Local development setup
+
+**1. Get a Postgres database running.** Any of these work:
+
+```bash
+# Option A: Docker (fastest, no local install)
+docker run --name deltaledger-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=deltaledger \
+  -p 5432:5432 -d postgres:16
+
+# Option B: a native local install (Ubuntu/Debian example)
+sudo apt-get install -y postgresql
+sudo -u postgres createdb deltaledger
+
+# Option C: a hosted free-tier database (Neon, Supabase, Vercel Postgres, etc.) --
+# just copy the connection string it gives you into DATABASE_URL below.
+```
+
+**2. Configure the connection.**
+
+```bash
+cp .env.example .env
+# edit .env if your DATABASE_URL differs from the default
+```
+
+**3. Install dependencies and run migrations.**
 
 ```bash
 npm install
-npx drizzle-kit migrate       # creates db/deltaledger.sqlite from db/schema.ts
-npm run dev                    # http://localhost:3000
+npm run db:migrate     # applies drizzle/*.sql to the database at DATABASE_URL
 ```
 
-To see the full product immediately with realistic data, either click **"Load sample engineering
-change"** on the empty dashboard, or seed it from the command line:
+**4. Run the app.**
 
 ```bash
-npx tsx -e "import('./db/seed').then(m => m.seedSampleEngineeringChange())"
+npm run dev             # http://localhost:3000
 ```
 
+**5. (Optional) Load realistic sample data** — either click **"Load sample engineering change"**
+on the empty dashboard, or from the command line:
+
 ```bash
-npm test                       # 117 tests across 17 files
-npm run build                  # compiles, type-checks, and prerenders -- does NOT verify business logic on its own
+npm run db:seed
 ```
+
+The seed script is idempotent: running it again against a database that already has the sample
+scenario returns the existing engineering-change id instead of creating a duplicate.
+
+### Running tests
+
+Tests run against a **real, disposable Postgres database** — never the same database as local
+dev/production — and truncate all tables between test files for isolation.
+
+```bash
+createdb deltaledger_test    # once, if it doesn't already exist
+npm test                      # uses TEST_DATABASE_URL, defaulting to
+                               # postgresql://postgres:postgres@localhost:5432/deltaledger_test
+npm run build                 # compiles, type-checks, and prerenders -- does NOT verify business logic on its own
+```
+
+Override `TEST_DATABASE_URL` (e.g. in CI) if that default doesn't fit your environment.
+
+### Deploying to Vercel
+
+1. Provision a Postgres database reachable from Vercel (Vercel Postgres, Neon, Supabase, or any
+   Postgres with a public/pooled connection string).
+2. Set the `DATABASE_URL` environment variable in the Vercel project settings to that connection
+   string.
+3. Run `npm run db:migrate` once (locally, or via a one-off Vercel deploy hook/CLI command) pointed
+   at that same `DATABASE_URL` to create the schema before the app's first request.
+4. Deploy. There is no local file the app depends on — every request connects to Postgres over
+   the network via the pooled connection in `db/client.ts`.
 
 ## Architecture
 
@@ -45,7 +101,7 @@ Server Component (page.tsx)  --reads-->  Repository layer (db/repositories/*.ts)
 Client Component ("use client")          Drizzle ORM (db/schema.ts)
   |  handles interactivity                      |
   v                                             v
-Server Action (src/app/actions.ts)  --writes--> SQLite (db/deltaledger.sqlite, via better-sqlite3)
+Server Action (src/app/actions.ts)  --writes--> PostgreSQL (via DATABASE_URL, node-postgres)
 ```
 
 - **Server Components** (every `page.tsx` under `src/app/engineering-changes/`) fetch data
@@ -64,11 +120,11 @@ Server Action (src/app/actions.ts)  --writes--> SQLite (db/deltaledger.sqlite, v
   persistence: authorization checks, the immutable-snapshot recalculation logic, the versioned
   supplier-terms/exchange-rate pattern, the over-allocation guard. This layer is tested directly
   (`db/__tests__/*.test.ts`) against a real database, independent of any HTTP or React layer.
-- **Drizzle ORM + SQLite** (`db/schema.ts`, `db/client.ts`, `better-sqlite3`) is the actual
-  database. The schema is written using only column types/patterns identical in Drizzle's
-  `pg-core`, so moving to real Postgres in production is a driver swap
-  (`drizzle-orm/better-sqlite3` -> `drizzle-orm/postgres-js` or `node-postgres`), not a schema
-  rewrite -- see "Future roadmap" below.
+- **Drizzle ORM + PostgreSQL** (`db/schema.ts`, `db/client.ts`) is the actual database, connected
+  to over the network via a `DATABASE_URL` connection string and `node-postgres` (`pg`) — no local
+  file, which is what makes this safe to run on Vercel's ephemeral/read-only serverless
+  filesystem (an earlier SQLite/`better-sqlite3` version of this app could not run there at all).
+  A module-level connection pool (`db/client.ts`) is reused across warm serverless invocations.
 - **Pure domain logic** (`src/domains/deltaledger/`) is unchanged by any of the above: the
   calculation engine, classification rules, and authorization gates are plain TypeScript
   functions with zero framework or database dependency, called *by* the repository layer, not the
@@ -79,7 +135,7 @@ Server Action (src/app/actions.ts)  --writes--> SQLite (db/deltaledger.sqlite, v
 ```
 db/
   schema.ts                    # Drizzle schema -- every table, portable to Postgres
-  client.ts                    # better-sqlite3 connection (DELTALEDGER_DB_PATH env override)
+  client.ts                    # node-postgres Pool + Drizzle client (DATABASE_URL env var)
   seed.ts                      # realistic two-supplier, two-currency demo scenario, run through
                                 # the SAME repository functions the app uses (no separate fixture)
   repositories/
@@ -233,16 +289,18 @@ cache.
   registry** (SheetJS moved patched releases to its own CDN). Documented with the exact
   remediation command in `XLSX_REMEDIATION.md`; not executed in this environment because that CDN
   isn't reachable from here.
-- **SQLite, single file, no backup strategy, no connection pooling** -- appropriate for local
-  development and demos, not for a real multi-user production deployment.
+- **No connection pooling beyond a single small per-instance pool** (`db/client.ts` caps at 5
+  connections). Fine for a demo or low-traffic deployment; a real production Vercel deployment at
+  scale would want a pooling layer in front of Postgres (PgBouncer, or a provider's built-in
+  pooler such as Neon's or Supabase's), since serverless functions can create many concurrent
+  connections under load.
+- **Timestamps and JSON-encoded fields remain `text` columns**, not native Postgres
+  `timestamp`/`jsonb` types — a deliberate choice during the SQLite-to-Postgres migration to keep
+  it a pure driver/dialect swap with zero repository-code behavior change, not a data-model
+  upgrade. Revisiting this is real, but separate, follow-up work.
 
 ## Future roadmap
 
-- **Postgres.** The schema is already written using only cross-compatible Drizzle column types.
-  Migration path: stand up a Postgres instance, swap `drizzle-orm/better-sqlite3` for
-  `drizzle-orm/postgres-js` (or `node-postgres`) in `db/client.ts`, regenerate migrations with
-  `dialect: "postgresql"` in `drizzle.config.ts`, and run them against the real database. No
-  repository or Server Action code should need to change.
 - **Real authentication and RBAC.** Replace `DemoUserContext` with a real session (NextAuth or
   equivalent), resolve the actual `organizationId` and `User` row from that session instead of
   `getOrCreateDefaultOrganization()`, and let the existing `organizationId` columns do the
@@ -251,6 +309,10 @@ cache.
   replacing the current first-rule-only resolution.
 - **A proper PO-to-EC relevance model**, replacing the interim `purchaseOrders.engineeringChangeId`
   column with the BOM-diff-driven relevance join described above.
+- **Upgrade `text` timestamp/JSON columns to native `timestamp`/`jsonb`** now that the database is
+  real Postgres, if the query/indexing benefits are worth the repository-code changes.
+- **A real connection-pooling layer** (PgBouncer or a managed provider's pooler) in front of
+  Postgres for production traffic beyond what a handful of small per-instance pools can handle.
 - **Production deployment**: containerize (`Dockerfile` + `docker-compose.yml` for app + Postgres),
   CI (lint/typecheck/test/build on every PR), structured logging, and a real backup strategy for
   the database.

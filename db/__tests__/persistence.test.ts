@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { resetTestDatabase } from "./testDb";
 import { eq } from "drizzle-orm";
 import { db } from "../client";
 import { suppliers, supplierCommitmentTerms } from "../schema";
@@ -15,8 +15,8 @@ import { User } from "@/domains/deltaledger/types";
 const partDataOwner: User = { id: "u-pdo", name: "Pat Owner", role: "part_data_owner" };
 const buyer: User = { id: "u-buyer", name: "Bob Buyer", role: "buyer" };
 
-beforeAll(() => {
-  migrate(db, { migrationsFolder: "./drizzle" });
+beforeAll(async () => {
+  await resetTestDatabase();
 });
 
 describe("Real persistence: create, import, reopen", () => {

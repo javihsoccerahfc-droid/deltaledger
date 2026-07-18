@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { resetTestDatabase } from "./testDb";
 import { eq } from "drizzle-orm";
 import { db } from "../client";
 import { exposureRecords } from "../schema";
@@ -19,8 +19,8 @@ const scm: User = { id: "u-scm", name: "Sam SCM", role: "supply_chain_manager" }
 const buyer: User = { id: "u-buyer", name: "Bob Buyer", role: "buyer" };
 const finance = { id: "u-finance", name: "Fran Finance" };
 
-beforeAll(() => {
-  migrate(db, { migrationsFolder: "./drizzle" });
+beforeAll(async () => {
+  await resetTestDatabase();
 });
 
 async function setUpEcWithExposure() {

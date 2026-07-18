@@ -32,9 +32,29 @@ const dateOnly = (offsetDays: number) => iso(offsetDays).slice(0, 10);
  * call. This is dogfooding the real persistence pipeline, not a hand-faked
  * in-memory fixture (that was the old sampleData.ts, now removed).
  */
+const SAMPLE_EC_NAME = "ECO-4127: Migrate Thermal Control Module to Digital Sensor";
+
+/**
+ * Seeds a complete, realistic engineering-change scenario THROUGH THE REAL
+ * REPOSITORY LAYER -- the exact same functions the UI's Server Actions
+ * call. This is dogfooding the real persistence pipeline, not a hand-faked
+ * in-memory fixture.
+ *
+ * Idempotent: safe to run against an already-seeded database (e.g. an
+ * accidental double-click of "Load sample data", or re-running this script
+ * against a hosted database that already has the sample scenario) -- it
+ * checks for the sample EC by name first and returns its existing id
+ * instead of creating a duplicate.
+ */
 export async function seedSampleEngineeringChange(): Promise<string> {
+  const existing = await ecRepo.listEngineeringChanges();
+  const alreadySeeded = existing.find((e) => e.name === SAMPLE_EC_NAME);
+  if (alreadySeeded) {
+    return alreadySeeded.id;
+  }
+
   const ec = await ecRepo.createEngineeringChange(
-    "ECO-4127: Migrate Thermal Control Module to Digital Sensor",
+    SAMPLE_EC_NAME,
     "Replace the analog NTC temperature sensor with a digital I2C sensor across the Thermal Control Module (Rev C), and remove the EMI shield can made redundant by the new enclosure design.",
     partDataOwner.id
   );
