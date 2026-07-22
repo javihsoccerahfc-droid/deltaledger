@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1784390353891,
+      "tag": "0000_married_preak",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784434325710,
+      "tag": "0001_p0_data_integrity_remediation",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784434325711,
+      "tag": "0002_p0_enforce_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784600432663,
+      "tag": "0003_milestone_3_75_evidence_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784679224991,
+      "tag": "0004_phase6a_crosswalk_idempotency",
+      "breakpoints": true
+    }
+  ]
+}

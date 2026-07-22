@@ -1,0 +1,80 @@
+name: CI
+
+# Runs on every push and every PR. This is the direct answer to "no CI configured yet" from
+# the Product Readiness Audit: before this, typecheck/test/build were only ever run manually,
+# by hand, on whatever machine happened to be doing the work -- exactly the kind of gap that
+# let environment-specific assumptions (a database that happened to already be in the right
+# state, a working directory that happened to be correct) go unnoticed until they broke a
+# fresh environment, as happened during this project's own deployment.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    # A real Postgres instance, not a mock -- this project's test suite is explicitly designed
+    # to run against a live database (see db/__tests__/globalSetup.ts), and every lesson learned
+    # in this project so far has come from testing against a real instance, not an approximation.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deltaledger_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/deltaledger_ci
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/deltaledger_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Create additional database (dev/CI DATABASE_URL, separate from the test DB)
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE deltaledger_ci;"
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      # globalSetup.ts (see db/__tests__/globalSetup.ts) forces the test database to a clean
+      # slate before every run and applies all migrations itself -- no separate migration step
+      # is needed here before `npm test`. This is deliberate: CI should prove the same
+      # self-contained path a fresh developer checkout relies on, not a hand-sequenced one.
+      - name: Test
+        run: npm test
+
+      - name: Migrate the CI "dev" database (proves the fresh-database migration path independently of the test suite's own setup)
+        run: npm run db:migrate
+
+      - name: Check migration status (should report up to date; fails loudly otherwise)
+        run: |
+          npm run db:status | tee /tmp/db-status.txt
+          if grep -q "PENDING" /tmp/db-status.txt; then
+            echo "::error::Migrations are pending after db:migrate -- something is wrong with the migration sequence."
+            exit 1
+          fi
+
+      - name: Build
+        run: npm run build

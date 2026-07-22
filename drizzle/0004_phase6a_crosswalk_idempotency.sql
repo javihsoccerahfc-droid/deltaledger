@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "crosswalks_one_active_per_plm_erp_pair" ON "part_number_crosswalks" USING btree ("organization_id","plm_part_id","erp_part_id") WHERE "part_number_crosswalks"."superseded_by_id" is null;
