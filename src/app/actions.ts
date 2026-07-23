@@ -11,6 +11,14 @@ import * as altDemandRepo from "../../db/repositories/alternateDemand";
 import * as mitigationRepo from "../../db/repositories/mitigation";
 import * as outcomeRepo from "../../db/repositories/financialOutcome";
 import * as portfolioRepo from "../../db/repositories/portfolio";
+import {
+  computeCutoverDisposition,
+  resolveCutoverScenarioDataset,
+  CutoverSimulationInputs,
+  DispositionResult,
+} from "@/domains/deltaledger/cutover/dispositionModel";
+import { assertEditable, editableCheckReason } from "@/domains/deltaledger/readOnly";
+import { ENGINEERING_CHANGE_CREATION_DISABLED } from "@/config/demoMode";
 import { getWorkspaceCompletion, getEvidenceCoverage, getDecisionReadiness, getNextAction } from "@/domains/deltaledger/workspaceSummary";
 import {
   getPortfolioAttentionItems,
@@ -75,7 +83,14 @@ function parseActorField(formData: FormData): User {
   }
 }
 
-export async function createEngineeringChangeAction(name: string, description: string, actor: User) {
+export async function createEngineeringChangeAction(
+  name: string,
+  description: string,
+  actor: User
+): Promise<{ success: true; ec: Awaited<ReturnType<typeof ecRepo.createEngineeringChange>> } | { success: false; message: string }> {
+  if (ENGINEERING_CHANGE_CREATION_DISABLED) {
+    return { success: false, message: "Creating new engineering changes is disabled in this environment." };
+  }
   const ec = await ecRepo.createEngineeringChange(name, description, actor.id);
   await auditRepo.recordAuditEvent({
     engineeringChangeId: ec.id,
@@ -85,7 +100,7 @@ export async function createEngineeringChangeAction(name: string, description: s
     action: `Created engineering change "${ec.name}".`,
   });
   revalidatePath("/engineering-changes");
-  return ec;
+  return { success: true, ec };
 }
 
 export async function listEngineeringChangesAction() {
@@ -113,6 +128,8 @@ export async function importBomAction(
     const versionLabel = requireStringField(formData, "versionLabel") as "current" | "proposed";
     const file = requireFileField(formData, "file");
     const actor = parseActorField(formData);
+
+    assertEditable(await ecRepo.getEngineeringChangeById(ecId));
 
     const table = await parseFileToTable(file);
     const bomImport = await bomRepo.saveBomImport(ecId, versionLabel, table, file.name, "Sheet1", actor.id);
@@ -162,6 +179,8 @@ export async function importPurchaseOrderAction(
     const file = requireFileField(formData, "file");
     const actor = parseActorField(formData);
     const confirmed = formData.get("confirmSupersedesExposure") === "true";
+
+    assertEditable(await ecRepo.getEngineeringChangeById(ecId));
 
     if (!confirmed && (await exposureRepo.hasActiveExposureRecords(ecId))) {
       return {
@@ -222,6 +241,7 @@ export async function addExchangeRateAction(rate: Parameters<typeof poRepo.addEx
 }
 
 export async function generateMappingSuggestionsAction(ecId: string, actor: User) {
+  assertEditable(await ecRepo.getEngineeringChangeById(ecId));
   const diff = await bomRepo.getBomDiffForEc(ecId);
   const purchaseData = await poRepo.getPurchaseDataForEc(ecId);
   const eligible = diff
@@ -249,6 +269,8 @@ export async function getCrosswalksAction() {
 }
 
 export async function approveMappingAction(ecId: string, crosswalkId: string, actor: User) {
+  const readOnlyReason = editableCheckReason(await ecRepo.getEngineeringChangeById(ecId));
+  if (readOnlyReason) return { success: false as const, message: readOnlyReason };
   const result = await crosswalkRepo.approveCrosswalkById(crosswalkId, actor);
   if (result.success) {
     const crosswalk = await crosswalkRepo.getCrosswalkById(crosswalkId);
@@ -271,6 +293,8 @@ export async function approveMappingAction(ecId: string, crosswalkId: string, ac
 }
 
 export async function rejectMappingAction(ecId: string, crosswalkId: string, actor: User) {
+  const readOnlyReason = editableCheckReason(await ecRepo.getEngineeringChangeById(ecId));
+  if (readOnlyReason) return { success: false as const, message: readOnlyReason };
   const result = await crosswalkRepo.rejectCrosswalkById(crosswalkId, actor);
   if (result.success) {
     const crosswalk = await crosswalkRepo.getCrosswalkById(crosswalkId);
@@ -301,6 +325,8 @@ export async function reviseMappingAction(
   reason: string,
   actor: User
 ) {
+  const readOnlyReason = editableCheckReason(await ecRepo.getEngineeringChangeById(ecId));
+  if (readOnlyReason) return { success: false as const, message: readOnlyReason };
   const priorCrosswalk = await crosswalkRepo.getCrosswalkById(crosswalkId);
   const result = await crosswalkRepo.reviseCrosswalk(crosswalkId, revision, actor, reason);
   if (result.success) {
@@ -319,6 +345,7 @@ export async function reviseMappingAction(
 }
 
 export async function setMappingErpIdAction(ecId: string, crosswalkId: string, erpPartId: string) {
+  assertEditable(await ecRepo.getEngineeringChangeById(ecId));
   await crosswalkRepo.setCrosswalkErpId(crosswalkId, erpPartId);
   revalidatePath(`/engineering-changes/${ecId}/mapping`);
 }
@@ -331,6 +358,8 @@ export async function setMappingErpIdAction(ecId: string, crosswalkId: string, e
  * rather than silently continuing to use the now-revoked figure.
  */
 export async function revokeMappingAction(ecId: string, crosswalkId: string, reason: string, actor: User) {
+  const readOnlyReason = editableCheckReason(await ecRepo.getEngineeringChangeById(ecId));
+  if (readOnlyReason) return { success: false as const, message: readOnlyReason };
   const priorCrosswalk = await crosswalkRepo.getCrosswalkById(crosswalkId);
   const result = await crosswalkRepo.revokeCrosswalk(crosswalkId, actor, reason);
   if (result.success) {
@@ -353,6 +382,7 @@ export async function setMappingTypeAction(
   crosswalkId: string,
   mappingType: "one_to_one" | "one_to_many" | "many_to_one"
 ) {
+  assertEditable(await ecRepo.getEngineeringChangeById(ecId));
   await crosswalkRepo.setCrosswalkMappingType(crosswalkId, mappingType);
   revalidatePath(`/engineering-changes/${ecId}/mapping`);
 }
@@ -362,6 +392,7 @@ export async function setAllocationRuleAction(
   crosswalkId: string,
   rule: Parameters<typeof crosswalkRepo.upsertAllocationRule>[1]
 ) {
+  assertEditable(await ecRepo.getEngineeringChangeById(ecId));
   await crosswalkRepo.upsertAllocationRule(crosswalkId, rule);
   revalidatePath(`/engineering-changes/${ecId}/mapping`);
 }
@@ -390,6 +421,7 @@ export async function getAllocationRulesForCrosswalksAction(crosswalkIds: string
 // ---- Exposure ----
 
 export async function calculateExposureAction(ecId: string, actor: User) {
+  assertEditable(await ecRepo.getEngineeringChangeById(ecId));
   const asOfDate = new Date().toISOString().slice(0, 10);
   // Captured BEFORE recalculating -- this is what makes an honest before/after delta possible:
   // the previously-active records are about to be superseded, so this is the last moment
@@ -622,6 +654,7 @@ export async function createAlternateDemandSuggestionAction(
   input: { partId: string; quantityAvailableForOffset: number; sourceReference: string; demandSourceType: DemandSourceType },
   actor: User
 ) {
+  assertEditable(await ecRepo.getEngineeringChangeById(ecId));
   const created = await altDemandRepo.createAlternateDemandSuggestion(input);
   await auditRepo.recordAuditEvent({
     engineeringChangeId: ecId,
@@ -643,6 +676,8 @@ export async function getAllAllocationsAction() {
 }
 
 export async function approveAlternateDemandAction(ecId: string, recordId: string, actor: User) {
+  const readOnlyReason = editableCheckReason(await ecRepo.getEngineeringChangeById(ecId));
+  if (readOnlyReason) return { success: false as const, message: readOnlyReason };
   const result = await altDemandRepo.approveAlternateDemandById(recordId, actor);
   if (result.success) {
     await auditRepo.recordAuditEvent({
@@ -658,6 +693,8 @@ export async function approveAlternateDemandAction(ecId: string, recordId: strin
 }
 
 export async function rejectAlternateDemandAction(ecId: string, recordId: string, actor: User) {
+  const readOnlyReason = editableCheckReason(await ecRepo.getEngineeringChangeById(ecId));
+  if (readOnlyReason) return { success: false as const, message: readOnlyReason };
   const result = await altDemandRepo.rejectAlternateDemandById(recordId, actor);
   if (result.success) {
     await auditRepo.recordAuditEvent({
@@ -679,6 +716,8 @@ export async function allocateAlternateDemandAction(
   quantity: number,
   actor: User
 ) {
+  const readOnlyReason = editableCheckReason(await ecRepo.getEngineeringChangeById(ecId));
+  if (readOnlyReason) return { success: false as const, message: readOnlyReason };
   const result = await altDemandRepo.allocateAlternateDemandInDb(recordId, exposureRecordId, quantity, actor.id);
   if (result.success) {
     await auditRepo.recordAuditEvent({
@@ -702,6 +741,7 @@ export async function createMitigationAction(
   dueDate: string | null,
   actor: User
 ) {
+  assertEditable(await ecRepo.getEngineeringChangeById(ecId));
   const created = await mitigationRepo.createMitigationActionInDb(exposureRecordId, actionType, ownerUserId, dueDate);
   await auditRepo.recordAuditEvent({
     engineeringChangeId: ecId,
@@ -715,6 +755,7 @@ export async function createMitigationAction(
 }
 
 export async function transitionMitigationAction(ecId: string, mitigationActionId: string, status: MitigationActionStatus) {
+  assertEditable(await ecRepo.getEngineeringChangeById(ecId));
   await mitigationRepo.transitionMitigationActionStatus(mitigationActionId, status);
   revalidatePath(`/engineering-changes/${ecId}/mitigation`);
 }
@@ -742,6 +783,8 @@ export async function recordSupplierResponseAction(
   totalCommittedQuantity: number,
   actor: User
 ) {
+  const readOnlyReason = editableCheckReason(await ecRepo.getEngineeringChangeById(ecId));
+  if (readOnlyReason) return { success: false as const, message: readOnlyReason };
   const result = await mitigationRepo.recordSupplierResponseInDb(
     mitigationActionId,
     responseType,
@@ -771,6 +814,7 @@ export async function getSupplierResponsesAction(mitigationActionId: string) {
 // ---- Financial outcome ----
 
 export async function createOutcomeAction(ecId: string, inputs: OutcomeInputs, actor: User) {
+  assertEditable(await ecRepo.getEngineeringChangeById(ecId));
   const created = await outcomeRepo.createFinancialOutcomeInDb(inputs);
   await auditRepo.recordAuditEvent({
     engineeringChangeId: ecId,
@@ -785,6 +829,8 @@ export async function createOutcomeAction(ecId: string, inputs: OutcomeInputs, a
 }
 
 export async function closeOutcomeAction(ecId: string, outcomeId: string, actor: User) {
+  const readOnlyReason = editableCheckReason(await ecRepo.getEngineeringChangeById(ecId));
+  if (readOnlyReason) return { success: false as const, message: readOnlyReason };
   const result = await outcomeRepo.closeFinancialOutcomeInDb(outcomeId, actor.id);
   if (result.success) {
     await auditRepo.recordAuditEvent({
@@ -1035,4 +1081,71 @@ export async function runExposureScenarioAction(
   };
 
   return { ok: true, result };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cutover Simulator -- a permanent workspace capability (Master Specification, extended).
+// ---------------------------------------------------------------------------------------------
+
+export interface CutoverSimulationResponse {
+  disposition: DispositionResult;
+  /** The real, persisted exposure baseline for this EC's open POs -- read from ExposureRecord
+   *  rows, exactly what the Evidence Explorer already shows elsewhere. Source-honesty rule:
+   *  this number and disposition.lineItems never get summed into one blended total anywhere in
+   *  the UI without both halves being individually labeled. */
+  persistedExposureTotal: number;
+  persistedExposureRecordCount: number;
+  /** persistedExposureTotal + the fixed on-hand/WIP facts baked into the scenario dataset
+   *  (Master Specification Section 4's $125,720) -- computed here, once, so no screen or report
+   *  re-derives it independently and risks drifting from this figure. */
+  grossAffectedCommitment: number;
+}
+
+export type CutoverSimulationOutcome =
+  | { ok: true; response: CutoverSimulationResponse }
+  | { ok: false; reason: string };
+
+/**
+ * The one Server Action the Cutover Simulator screen calls. Resolves the engineering change's
+ * scenario dataset via resolveCutoverScenarioDataset() -- today that only recognizes Nova
+ * Robotics, but this action has no Nova-specific logic of its own; it defers entirely to that
+ * one resolution seam, exactly as designed. Nothing computed here is ever persisted -- the same
+ * "exploratory, never saved to history" rule the existing Scenario Explorer already follows.
+ */
+export async function runCutoverSimulationAction(
+  ecId: string,
+  inputs: CutoverSimulationInputs
+): Promise<CutoverSimulationOutcome> {
+  const ec = await ecRepo.getEngineeringChangeById(ecId);
+  if (!ec) {
+    return { ok: false, reason: "Engineering change not found." };
+  }
+
+  const dataset = resolveCutoverScenarioDataset(ec.name);
+  if (!dataset) {
+    return {
+      ok: false,
+      reason: "No cutover scenario dataset is available for this engineering change yet.",
+    };
+  }
+
+  const disposition = computeCutoverDisposition(inputs, dataset);
+
+  const persistedRecords = await exposureRepo.getActiveExposureRecordsForEc(ecId);
+  const persistedExposureTotal = persistedRecords.reduce((sum, r) => sum + r.grossCommittedValueReporting, 0);
+
+  const scenarioSeededOperationalTotal =
+    dataset.onHandPcbaUnits * dataset.onHandPcbaUnitCost +
+    dataset.onHandHarnessUnits * dataset.onHandHarnessUnitCost +
+    dataset.wipUnits * dataset.wipSunkCostPerUnit;
+
+  return {
+    ok: true,
+    response: {
+      disposition,
+      persistedExposureTotal,
+      persistedExposureRecordCount: persistedRecords.length,
+      grossAffectedCommitment: persistedExposureTotal + scenarioSeededOperationalTotal,
+    },
+  };
 }

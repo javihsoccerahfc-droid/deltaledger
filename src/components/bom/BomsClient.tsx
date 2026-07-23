@@ -238,7 +238,7 @@ export function BomsClient({
 
       {imports.current && imports.proposed && (
         <div className="mt-4">
-          <SuccessState title="Diff computed" body={`${diff.length} change(s) detected between current and proposed BOM.`} />
+          <SuccessState title="BOM comparison complete" body={`${diff.length} change(s) detected between current and proposed BOM.`} />
         </div>
       )}
 

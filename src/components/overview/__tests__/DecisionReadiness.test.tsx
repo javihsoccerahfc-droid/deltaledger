@@ -39,4 +39,25 @@ describe("DecisionReadiness", () => {
     const link = screen.getByRole("link", { name: /Import BOM Diff/ });
     expect(link).toHaveAttribute("href", "/engineering-changes/ec-1/boms");
   });
+
+  it("V3 UX fix -- explains the ready + 0%-known coexistence instead of leaving two green signals to silently contradict each other", () => {
+    render(
+      <DecisionReadiness
+        readiness={{ status: "ready", blockingReasons: [], primaryReasonCode: null }}
+        coverage={{ knownTotal: 0, estimatedTotal: 1000, unresolvedTotal: 0, grandTotal: 1000, coverageFraction: 0, knownCount: 0, estimatedCount: 2, unresolvedCount: 0 }}
+      />
+    );
+    expect(screen.getByText("Ready for financial review")).toBeInTheDocument();
+    expect(screen.getByText(/currently Estimated rather than Known/)).toBeInTheDocument();
+  });
+
+  it("does not add the bridging clause when ready and coverage is actually known", () => {
+    render(
+      <DecisionReadiness
+        readiness={{ status: "ready", blockingReasons: [], primaryReasonCode: null }}
+        coverage={{ knownTotal: 1000, estimatedTotal: 0, unresolvedTotal: 0, grandTotal: 1000, coverageFraction: 1, knownCount: 2, estimatedCount: 0, unresolvedCount: 0 }}
+      />
+    );
+    expect(screen.queryByText(/currently Estimated rather than Known/)).not.toBeInTheDocument();
+  });
 });

@@ -8,11 +8,13 @@ import * as altDemandRepo from "./repositories/alternateDemand";
 import * as mitigationRepo from "./repositories/mitigation";
 import * as outcomeRepo from "./repositories/financialOutcome";
 import * as auditRepo from "./repositories/audit";
-import { suppliers } from "./schema";
+import { suppliers, bomDiffEntries } from "./schema";
 import { db } from "./client";
 import { eq, and } from "drizzle-orm";
 import { getOrCreateDefaultOrganization } from "./repositories/organizations";
 import type { User } from "@/domains/deltaledger/types";
+import { NOVA_ROBOTICS_DATASET } from "@/domains/deltaledger/cutover/dispositionModel";
+import { markAsReplacement } from "@/domains/deltaledger/bomDiff";
 
 const partDataOwner: User = { id: "sample-pdo", name: "Priya Nair", role: "part_data_owner" };
 const scm: User = { id: "sample-scm", name: "Marcus Webb", role: "supply_chain_manager" };
@@ -248,6 +250,220 @@ export async function seedSampleEngineeringChange(): Promise<string> {
       });
     }
   }
+
+  return ec.id;
+}
+
+// ---------------------------------------------------------------------------------------------
+// DeltaLedger V3 -- Nova Robotics / ECO-1042 demonstration scenario.
+// ---------------------------------------------------------------------------------------------
+
+const nrPartDataOwner: User = { id: "nr-pdo", name: "Elena Suárez", role: "part_data_owner" };
+const nrScm: User = { id: "nr-scm", name: "James Whitfield", role: "supply_chain_manager" };
+const nrBuyer: User = { id: "nr-buyer", name: "Tasha Reyes", role: "buyer" };
+
+const NOVA_EC_NAME = "ECO-1042: Main Compute PCBA Rev B → Rev C";
+
+const PCBA_OLD_PART = "APX-8801B"; // Main Compute PCBA, Rev B
+const PCBA_NEW_PART = "APX-8801C"; // Main Compute PCBA, Rev C
+const HARNESS_OLD_PART = "APX-4415-1"; // Compute-to-Drive Wiring Harness, Rev 1
+const HARNESS_NEW_PART = "APX-4415-2"; // Compute-to-Drive Wiring Harness, Rev 2
+// Unaffected parts, seeded purely so the BOM diff isn't a two-line toy -- never opened in the
+// guided demo path.
+const UNAFFECTED_PARTS = [
+  { partNumber: "APX-8815", description: "Sensor Fusion PCBA" },
+  { partNumber: "APX-2201", description: "E-Stop Controller" },
+];
+
+/**
+ * Seeds the Nova Robotics / ECO-1042 demonstration scenario (DeltaLedger V3 Master
+ * Specification, Sections 3-4) through the real repository layer, exactly the same way
+ * seedSampleEngineeringChange() above does -- this is dogfooding the real BOM/PO/crosswalk/
+ * exposure pipeline, not a hand-faked fixture.
+ *
+ * Every dollar figure, quantity, and due date below is read directly from
+ * NOVA_ROBOTICS_DATASET (src/domains/deltaledger/cutoverDemo/dispositionModel.ts) -- the exact
+ * same constant the Cutover Simulator's disposition calculation uses. There is deliberately no
+ * second, independently-maintained copy of these numbers: this function and the simulator can
+ * never silently drift apart, because they both read the one canonical dataset.
+ *
+ * Idempotent: checks for the EC by name first and returns its existing id rather than
+ * duplicating it.
+ */
+export async function seedNovaRoboticsScenario(): Promise<string> {
+  const existing = await ecRepo.listEngineeringChanges();
+  const alreadySeeded = existing.find((e) => e.name === NOVA_EC_NAME);
+  if (alreadySeeded) {
+    return alreadySeeded.id;
+  }
+
+  const d = NOVA_ROBOTICS_DATASET;
+
+  const ec = await ecRepo.createEngineeringChange(
+    NOVA_EC_NAME,
+    "Transition the Main Compute PCBA from Rev B to Rev C to resolve thermal throttling caused by an obsolescence-driven voltage-regulator substitution. The new pinout requires the Compute-to-Drive Wiring Harness to move from Rev 1 to Rev 2 as well.",
+    nrPartDataOwner.id,
+    { isReadOnly: true }
+  );
+
+  await auditRepo.recordAuditEvent({
+    engineeringChangeId: ec.id,
+    entityType: "EngineeringChange",
+    entityId: ec.id,
+    actor: nrPartDataOwner.name,
+    action: `Created engineering change "${ec.name}" for Nova Robotics, Inc. (fictional demonstration company).`,
+  });
+
+  // --- BOM: current (Rev B / Rev 1) vs. proposed (Rev C / Rev 2), plus two unaffected parts. ---
+  // Quote the description field -- several descriptions below ("Main Compute PCBA, Rev B")
+  // contain a comma, which would otherwise misalign the columns of this hand-built CSV.
+  const bomRow = (partNumber: string, description: string) => `${partNumber},"${description}",1`;
+  const currentCsv = [
+    "Part Number,Description,Quantity Per",
+    bomRow(PCBA_OLD_PART, "Main Compute PCBA, Rev B"),
+    bomRow(HARNESS_OLD_PART, "Compute-to-Drive Wiring Harness, Rev 1"),
+    ...UNAFFECTED_PARTS.map((p) => bomRow(p.partNumber, p.description)),
+  ].join("\n");
+  const proposedCsv = [
+    "Part Number,Description,Quantity Per",
+    bomRow(PCBA_NEW_PART, "Main Compute PCBA, Rev C"),
+    bomRow(HARNESS_NEW_PART, "Compute-to-Drive Wiring Harness, Rev 2"),
+    ...UNAFFECTED_PARTS.map((p) => bomRow(p.partNumber, p.description)),
+  ].join("\n");
+
+  const currentTable = await parseCsvFile(new File([currentCsv], "apex2000_current_bom.csv", { type: "text/csv" }));
+  const proposedTable = await parseCsvFile(new File([proposedCsv], "apex2000_proposed_bom.csv", { type: "text/csv" }));
+
+  await bomRepo.saveBomImport(ec.id, "current", currentTable, "apex2000_current_bom.csv", "BOM", nrPartDataOwner.id);
+  await bomRepo.saveBomImport(ec.id, "proposed", proposedTable, "apex2000_proposed_bom.csv", "BOM", nrPartDataOwner.id);
+
+  // "Replaced" is never auto-inferred (see bomDiff.ts's markAsReplacement) -- pair the PCBA and
+  // harness removed/added entries explicitly, exactly as a real engineer would in the UI, then
+  // persist the paired result the same way recomputeBomDiff() itself would.
+  const rawDiff = await bomRepo.getBomDiffForEc(ec.id);
+  const pcbaRemoved = rawDiff.find((e) => e.partId === PCBA_OLD_PART && e.changeType === "removed");
+  const pcbaAdded = rawDiff.find((e) => e.partId === PCBA_NEW_PART && e.changeType === "added");
+  const harnessRemoved = rawDiff.find((e) => e.partId === HARNESS_OLD_PART && e.changeType === "removed");
+  const harnessAdded = rawDiff.find((e) => e.partId === HARNESS_NEW_PART && e.changeType === "added");
+
+  let pairedDiff = rawDiff;
+  if (pcbaRemoved && pcbaAdded) {
+    pairedDiff = markAsReplacement(pairedDiff, pcbaRemoved.id, pcbaAdded.id);
+  }
+  if (harnessRemoved && harnessAdded) {
+    pairedDiff = markAsReplacement(pairedDiff, harnessRemoved.id, harnessAdded.id);
+  }
+  await db.delete(bomDiffEntries).where(eq(bomDiffEntries.engineeringChangeId, ec.id));
+  if (pairedDiff.length > 0) {
+    await db.insert(bomDiffEntries).values(
+      pairedDiff.map((entry) => ({
+        engineeringChangeId: ec.id,
+        partId: entry.partId,
+        changeType: entry.changeType,
+        fromQuantity: entry.fromQuantity,
+        toQuantity: entry.toQuantity,
+        replacementPartId: entry.replacementPartId,
+      }))
+    );
+  }
+
+  await auditRepo.recordAuditEvent({
+    engineeringChangeId: ec.id,
+    entityType: "BomImport",
+    actor: nrPartDataOwner.name,
+    action: "Imported current and proposed BOM; explicitly paired the PCBA and harness replacements.",
+  });
+
+  // --- Open POs: PO-3301 (Sunrise Electronics, PCBA, 3 batches) and PO-3302 (Harness Works). ---
+  const poRows: string[] = ["PO Number,Supplier,Part Number,Quantity Open,Unit Price,Currency,Promised Receipt Date"];
+  for (const batch of d.pcbaBatches) {
+    poRows.push(
+      `PO-3301,${d.pcbaSupplierName},${PCBA_OLD_PART},${batch.quantity},${d.onHandPcbaUnitCost},USD,${dateOnly(batch.dueWeek * 7)}`
+    );
+  }
+  poRows.push(
+    `PO-3302,${d.harnessSupplierName},${HARNESS_OLD_PART},${d.harnessPoQuantity},${d.onHandHarnessUnitCost},USD,${dateOnly(d.harnessPoDueWeek * 7)}`
+  );
+  const poTable = await parseCsvFile(new File([poRows.join("\n")], "nova_open_po_export.csv", { type: "text/csv" }));
+  const poResult = await poRepo.savePurchaseOrderImport(ec.id, poTable, "nova_open_po_export.csv", nrBuyer.id);
+  await auditRepo.recordAuditEvent({
+    engineeringChangeId: ec.id,
+    entityType: "PurchaseOrder",
+    actor: nrBuyer.name,
+    action: `Imported open PO export (${poResult.lineCount} lines, ${poResult.supplierCount} supplier(s)): PO-3301 (Sunrise Electronics, PCBA, 3 batches) and PO-3302 (Harness Works, harness).`,
+  });
+
+  // --- Supplier commitment terms (the real, binary cancellable/non-cancellable + lead-time
+  //     terms this table already supports -- distinct from the tiered notice-based cancellation
+  //     percentages used by the Cutover Simulator's own disposition model, which are richer
+  //     than this table's shape and live as data inside NOVA_ROBOTICS_DATASET instead). ---
+  const org = await getOrCreateDefaultOrganization();
+  const [sunrise] = await db
+    .select()
+    .from(suppliers)
+    .where(and(eq(suppliers.organizationId, org.id), eq(suppliers.name, d.pcbaSupplierName)));
+  const [harnessWorks] = await db
+    .select()
+    .from(suppliers)
+    .where(and(eq(suppliers.organizationId, org.id), eq(suppliers.name, d.harnessSupplierName)));
+
+  await poRepo.addSupplierTerms(sunrise.id, {
+    partId: null,
+    ncnr: false,
+    standardLeadTimeDays: d.newPcbaLeadTimeWeeks * 7,
+    cancellationWindowDays: 45,
+    source: "verified_contract",
+    effectiveDate: dateOnly(-180),
+    notes: "Tiered cancellation fee schedule confirmed in MSA: 10% at ≥45 days' notice, 30% at 15-44 days, non-cancellable under 15 days.",
+    verifiedAt: iso(-20),
+    verifiedBy: nrPartDataOwner.id,
+    validUntil: dateOnly(180),
+  });
+  await poRepo.addSupplierTerms(harnessWorks.id, {
+    partId: null,
+    ncnr: false,
+    standardLeadTimeDays: 21,
+    cancellationWindowDays: 7,
+    source: "verified_contract",
+    effectiveDate: dateOnly(-180),
+    notes: "Standing accommodation: open harness POs may be converted to a new revision for a flat re-spec fee plus the per-unit cost delta, in lieu of a cancellation penalty.",
+    verifiedAt: iso(-20),
+    verifiedBy: nrPartDataOwner.id,
+    validUntil: dateOnly(180),
+  });
+  await auditRepo.recordAuditEvent({
+    engineeringChangeId: ec.id,
+    entityType: "SupplierCommitmentTerms",
+    actor: nrPartDataOwner.name,
+    action: "Recorded supplier commitment terms for Sunrise Electronics and Harness Works.",
+  });
+
+  // --- Crosswalk: exact-match, both parts approved. ---
+  const generated = await crosswalkRepo.generateAndSaveCrosswalkSuggestions(
+    [PCBA_OLD_PART, HARNESS_OLD_PART],
+    [PCBA_OLD_PART, HARNESS_OLD_PART]
+  );
+  for (const cw of generated) {
+    await crosswalkRepo.approveCrosswalkById(cw.id, nrPartDataOwner);
+  }
+  await auditRepo.recordAuditEvent({
+    engineeringChangeId: ec.id,
+    entityType: "PartNumberCrosswalk",
+    actor: nrPartDataOwner.name,
+    action: "Generated and approved part-number mappings for the PCBA and harness.",
+  });
+
+  // --- Real, persisted Week-0 baseline exposure -- the $125,720 Gross Affected Commitment the
+  //     Executive Risk Overview leads with is a genuine, queryable figure, not a display
+  //     constant (Master Specification Section 9). ---
+  const asOfDate = dateOnly(0);
+  await exposureRepo.calculateAndPersistExposure(ec.id, asOfDate, nrPartDataOwner.id);
+  await auditRepo.recordAuditEvent({
+    engineeringChangeId: ec.id,
+    entityType: "ExposureRecord",
+    actor: nrPartDataOwner.name,
+    action: "Calculated Week-0 baseline exposure against the imported open POs.",
+  });
 
   return ec.id;
 }

@@ -3,7 +3,12 @@ import { engineeringChanges } from "../schema";
 import { eq, desc } from "drizzle-orm";
 import { getOrCreateDefaultOrganization } from "./organizations";
 
-export async function createEngineeringChange(name: string, description: string, createdBy: string) {
+export async function createEngineeringChange(
+  name: string,
+  description: string,
+  createdBy: string,
+  options: { isReadOnly?: boolean } = {}
+) {
   const org = await getOrCreateDefaultOrganization();
   const [ec] = await db
     .insert(engineeringChanges)
@@ -14,6 +19,7 @@ export async function createEngineeringChange(name: string, description: string,
       status: "draft",
       createdBy,
       targetEffectiveDate: null,
+      isReadOnly: options.isReadOnly ?? false,
     })
     .returning();
   return ec;

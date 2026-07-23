@@ -31,7 +31,7 @@ export function EvidenceCoverageBar({
   const unresolvedPct = hasData ? (unresolvedTotal / grandTotal) * 100 : 0;
 
   return (
-    <div className={variant === "compact" ? "min-w-[140px]" : "min-w-[240px]"}>
+    <div className={variant === "compact" ? "min-w-0" : "min-w-[240px]"}>
       <div className="flex items-baseline justify-between gap-2">
         <p className={`font-semibold text-ink ${variant === "compact" ? "text-sm" : "text-xl"}`}>
           {hasData ? formatPercent(coverageFraction) : "—"}

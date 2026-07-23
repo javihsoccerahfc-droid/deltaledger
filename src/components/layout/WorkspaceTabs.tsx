@@ -42,6 +42,7 @@ const TABS: TabDef[] = [
   { href: "mapping", label: "Mapping", isComplete: (c) => c.mappingComplete, pendingCount: (c) => c.mappingPending },
   { href: "exposure", label: "Exposure", isComplete: (c) => c.exposureComplete },
   { href: "explore", label: "Explore", isOptional: true },
+  { href: "cutover-simulator", label: "Cutover Simulator", isOptional: true },
   { href: "alternate-demand", label: "Alt. Demand", isOptional: true },
   { href: "mitigation", label: "Mitigation", isComplete: (c) => c.mitigationComplete, pendingCount: (c) => c.mitigationPending },
   { href: "report", label: "Report" },

@@ -50,6 +50,12 @@ export const engineeringChanges = pgTable("engineering_changes", {
   status: text("status").$type<"draft" | "mapping_review" | "exposure_calculated" | "mitigating" | "closed">().notNull(),
   createdBy: text("created_by").notNull(),
   targetEffectiveDate: text("target_effective_date"),
+  // A genuine, reusable capability -- not a demo-specific flag. Any engineering change can be
+  // marked read-only (a finalized/archived EC shared for audit, a locked historical record,
+  // etc.); the Nova Robotics demonstration scenario is simply the first thing that sets it.
+  // Enforced at the Server Action layer (see src/domains/deltaledger/readOnly.ts), never only
+  // in the UI -- a disabled button is a courtesy, not a security boundary.
+  isReadOnly: boolean("is_read_only").notNull().default(false),
   ...timestamps,
 });
 

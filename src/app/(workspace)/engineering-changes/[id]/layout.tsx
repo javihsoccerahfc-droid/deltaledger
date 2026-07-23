@@ -42,6 +42,7 @@ export default async function EcLayout({ children, params }: { children: React.R
         lastActivity={summary.lastActivity}
         nextAction={summary.nextAction}
         readinessStatus={summary.readiness.status}
+        isReadOnly={ec.isReadOnly}
       />
       <WorkspaceTabs ecId={ec.id} completion={summary.completion} staleReasonCode={summary.readiness.primaryReasonCode} />
       <div className="px-6 py-8">{children}</div>

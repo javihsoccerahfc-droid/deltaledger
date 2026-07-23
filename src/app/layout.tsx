@@ -1,13 +1,19 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { DemoUserProvider } from "@/lib/context/DemoUserContext";
-import { TopNav } from "@/components/layout/TopNav";
 
 export const metadata: Metadata = {
   title: "DeltaLedger",
-  description: "A deterministic financial decision platform for engineering changes.",
+  description: "Deterministic financial exposure analysis for engineering changes.",
 };
 
+/**
+ * Trimmed deliberately, as part of the V3 public/workspace split: this file now owns only
+ * what's genuinely global (fonts, base color, html/body tags) -- not navigation and not the
+ * demo-user role context, both of which are workspace-specific concepts with no business
+ * loading on the public marketing pages. See:
+ *   - src/app/(workspace)/layout.tsx -- SiteHeader in "workspace" mode + DemoUserProvider
+ *   - src/app/(marketing)/layout.tsx -- SiteHeader in "public" mode + PublicFooter
+ */
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -15,12 +21,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased bg-paper text-ink">
-        <DemoUserProvider>
-          <TopNav />
-          <main className="mx-auto max-w-[1400px] px-6 py-8">{children}</main>
-        </DemoUserProvider>
-      </body>
+      <body className="antialiased bg-paper text-ink">{children}</body>
     </html>
   );
 }

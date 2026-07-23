@@ -250,6 +250,17 @@ export function MappingClient({
                         list="po-line-part-numbers"
                         className="rounded-sm border border-line px-2 py-1 font-mono text-sm disabled:bg-paper"
                       />
+                      <span
+                        className={`rounded-sm px-1.5 py-0.5 text-[11px] font-semibold ${
+                          confidencePct >= 95
+                            ? "bg-status-successBg text-status-success"
+                            : confidencePct >= 70
+                              ? "bg-status-warningBg text-status-warning"
+                              : "bg-status-criticalBg text-status-critical"
+                        }`}
+                      >
+                        {confidencePct}% match
+                      </span>
                       <span className="rounded-sm border border-line bg-paper px-1.5 py-0.5 text-[11px] text-ink-soft">
                         {c.matchMethod}
                       </span>

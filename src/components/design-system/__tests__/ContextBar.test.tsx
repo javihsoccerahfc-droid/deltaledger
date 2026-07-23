@@ -110,9 +110,20 @@ describe("ContextBar", () => {
     expect(screen.queryByText(/imported/)).not.toBeInTheDocument();
   });
 
+  it("shows a read-only badge when the engineering change is locked, and omits it otherwise", () => {
+    const { rerender } = render(
+      <ContextBar ecId="ec-1" name="EC" description="" coverage={emptyCoverage} lastActivity={null} isReadOnly />
+    );
+    expect(screen.getByText("Read-only")).toBeInTheDocument();
+
+    rerender(<ContextBar ecId="ec-1" name="EC" description="" coverage={emptyCoverage} lastActivity={null} isReadOnly={false} />);
+    expect(screen.queryByText("Read-only")).not.toBeInTheDocument();
+  });
+
   it("stacks context below the title at narrow widths instead of squeezing it beside the name (responsive class present)", () => {
     render(<ContextBar ecId="ec-1" name="EC" description="" coverage={realCoverage} lastActivity={null} />);
-    const row = screen.getByText("EC").closest("div")?.parentElement;
+    // "EC" -> h1 -> title-row div (added for the read-only badge) -> min-w-0 lg:flex-1 div -> the row itself.
+    const row = screen.getByText("EC").closest("div")?.parentElement?.parentElement;
     // flex-col by default, lg:flex-row only from the lg breakpoint up -- this is what
     // prevents the coverage bar from being squeezed into an unreadable sliver on a narrow
     // laptop, per the approved plan's explicit responsive requirement.

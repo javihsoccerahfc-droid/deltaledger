@@ -13,6 +13,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:status": "tsx db/scripts/db-status.ts",
     "db:seed": "tsx -e \"import('./db/seed').then(m => m.seedSampleEngineeringChange()).then((id) => console.log('Seeded engineering change:', id))\"",
+    "db:seed:nova": "tsx -e \"import('./db/seed').then(m => m.seedNovaRoboticsScenario()).then((id) => console.log('Seeded Nova Robotics ECO-1042:', id))\"",
     "verify": "npm run lint && tsc --noEmit && npm test && npm run build"
   },
   "dependencies": {

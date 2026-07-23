@@ -1,5 +1,5 @@
 import { Hero, HeroTone } from "@/components/design-system/Hero";
-import type { DecisionReadiness as DecisionReadinessData, NextAction } from "@/domains/deltaledger/workspaceSummary";
+import type { DecisionReadiness as DecisionReadinessData, NextAction, EvidenceCoverage } from "@/domains/deltaledger/workspaceSummary";
 
 const STATUS_CONFIG: Record<DecisionReadinessData["status"], { label: string; tone: HeroTone; helperText: string }> = {
   ready: {
@@ -25,18 +25,41 @@ const STATUS_CONFIG: Record<DecisionReadinessData["status"], { label: string; to
  * verdict IS the one thing to understand within three seconds of opening this page, not a
  * plain card among others. The verdict is always paired with the exact, checkable reasons
  * behind it (see getDecisionReadiness in workspaceSummary.ts): never an opaque status alone.
+ *
+ * V3 UX fix -- readiness and evidence coverage answer two genuinely different, both-correct
+ * questions: readiness is workflow completeness (did every required step happen), coverage is
+ * data-quality confidence (how much of the dollar figure is Known vs. Estimated). Both being
+ * true at once -- "ready" alongside 0% known -- isn't a bug in either calculation, but showing
+ * them with no bridge between them reads as a contradiction. Neither calculation changes here;
+ * only the helper text gains one clause, and only in the specific case that would otherwise
+ * look contradictory, so this Hero explains itself instead of leaving the visitor to reconcile
+ * two numbers alone.
  */
-export function DecisionReadiness({ readiness, nextAction }: { readiness: DecisionReadinessData; nextAction?: NextAction | null }) {
+export function DecisionReadiness({
+  readiness,
+  nextAction,
+  coverage,
+}: {
+  readiness: DecisionReadinessData;
+  nextAction?: NextAction | null;
+  coverage?: EvidenceCoverage;
+}) {
   const config = STATUS_CONFIG[readiness.status];
+  const allEstimated = Boolean(coverage && coverage.grandTotal > 0 && coverage.knownTotal === 0);
+  const tone: HeroTone = readiness.status === "ready" && allEstimated ? "neutral" : config.tone;
+  const helperText =
+    readiness.status === "ready" && allEstimated
+      ? `${config.helperText} Every figure here is currently Estimated rather than Known — reasonable, and still worth a second look before treating it as final.`
+      : config.helperText;
 
   return (
     <Hero
       eyebrow="READINESS"
-      tone={config.tone}
+      tone={tone}
       value={config.label}
       supporting={
         <div className="space-y-2">
-          <p>{config.helperText}</p>
+          <p>{helperText}</p>
           {readiness.blockingReasons.length > 0 && (
             <ul className="space-y-1">
               {readiness.blockingReasons.map((reason) => (

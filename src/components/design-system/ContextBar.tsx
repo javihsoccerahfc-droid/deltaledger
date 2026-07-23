@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { EvidenceCoverageBar } from "./EvidenceCoverageBar";
+import { StatusPanel } from "./StatusPanel";
 import type { EvidenceCoverage, NextAction, DecisionReadinessStatus } from "@/domains/deltaledger/workspaceSummary";
 
 /**
@@ -17,6 +18,10 @@ import type { EvidenceCoverage, NextAction, DecisionReadinessStatus } from "@/do
  * yet" state rather than disappearing. This is what lets individual pages stop needing to
  * restate the overall exposure total in their own Hero -- the shell already carries it; a
  * page's own Hero (where it has one) is free to lead with what's specific to THAT page.
+ *
+ * V3 -- the financial-position block now renders through the shared StatusPanel primitive
+ * rather than its own hand-rolled layout, so it reads as a contained surface belonging to the
+ * page instead of a widget floating in the flex gap (the V2 feedback this addresses).
  *
  * Responsive behavior is deliberate, not incidental:
  *  - the EC name truncates with an ellipsis and a native title tooltip rather than wrapping
@@ -42,6 +47,7 @@ export function ContextBar({
   lastActivity,
   nextAction,
   readinessStatus,
+  isReadOnly,
 }: {
   ecId: string;
   name: string;
@@ -50,6 +56,7 @@ export function ContextBar({
   lastActivity: string | null;
   nextAction?: NextAction | null;
   readinessStatus?: DecisionReadinessStatus;
+  isReadOnly?: boolean;
 }) {
   const money = (n: number) => n.toLocaleString(undefined, { style: "currency", currency: "USD" });
 
@@ -61,27 +68,35 @@ export function ContextBar({
 
       <div className="mt-1 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between lg:gap-6">
         <div className="min-w-0 lg:flex-1">
-          <h1 className="truncate text-lg font-semibold text-ink" title={name}>
-            {name}
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="truncate text-lg font-semibold text-ink" title={name}>
+              {name}
+            </h1>
+            {isReadOnly && (
+              <span
+                className="shrink-0 rounded-sm border border-line bg-paper px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-soft"
+                title="This engineering change is read-only. Every screen, calculation, and simulation is fully interactive to explore -- creating, editing, or deleting data is disabled."
+              >
+                Read-only
+              </span>
+            )}
+          </div>
           {description && <p className="mt-0.5 line-clamp-1 max-w-2xl text-xs text-ink-soft">{description}</p>}
           {lastActivity && <p className="mt-1 text-[11px] text-ink-soft">{lastActivity}</p>}
         </div>
 
         <div className="flex shrink-0 items-end gap-4" data-testid={`context-bar-coverage-${ecId}`}>
-          <div>
-            <p className="text-[10px] font-medium uppercase tracking-wide text-ink-soft">Current financial position</p>
-            {coverage.grandTotal > 0 ? (
-              <div className="flex items-center gap-2">
-                <p className="data-num text-lg font-semibold text-ink">{money(coverage.grandTotal)}</p>
+          <StatusPanel
+            title="Current financial position"
+            value={coverage.grandTotal > 0 ? money(coverage.grandTotal) : <span className="text-sm text-ink-soft">Not calculated yet</span>}
+            indicator={
+              coverage.grandTotal > 0 ? (
                 <div className="w-16">
                   <EvidenceCoverageBar coverage={coverage} variant="compact" />
                 </div>
-              </div>
-            ) : (
-              <p className="text-sm text-ink-soft">Not calculated yet</p>
-            )}
-          </div>
+              ) : undefined
+            }
+          />
 
           {nextAction && readinessStatus && readinessStatus !== "ready" && (
             <Link

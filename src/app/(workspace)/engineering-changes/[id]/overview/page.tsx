@@ -8,7 +8,7 @@ export default async function OverviewPage({ params }: { params: { id: string } 
 
   return (
     <div className="space-y-6">
-      <DecisionReadiness readiness={summary.readiness} nextAction={summary.nextAction} />
+      <DecisionReadiness readiness={summary.readiness} nextAction={summary.nextAction} coverage={summary.coverage} />
 
       {summary.coverage.grandTotal > 0 && (
         <Card>
